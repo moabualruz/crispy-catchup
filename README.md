@@ -2,24 +2,29 @@
 
 Catchup and timeshift URL helpers for IPTV streams.
 
-## Status
+## What This Crate Is
 
-Extracted from CrispyTivi. Intended as a reusable Rust crate for catchup URL construction and validation.
+`crispy-catchup` encapsulates catchup-mode parsing and URL generation for IPTV channels that support archive playback, timeshift playback, or VOD-style catchup flows.
 
-## What This Crate Provides
+## What It Provides
 
-- catchup mode handling
+- catchup mode resolution
 - provider-specific source parsing
-- template-based catchup URL formatting
-- live/timeshift/VOD catchup helpers
-- catchup-window validation
+- time-placeholder template expansion
+- helpers for:
+  - timeshift playback
+  - VOD catchup playback
+  - live playback with “now” placeholders
+- catchup window validation
 
 ## Installation
 
 ```toml
 [dependencies]
-crispy-catchup = "0.1"
+crispy-catchup = "0.1.1"
 ```
+
+MSRV: Rust `1.85`
 
 ## Quick Start
 
@@ -33,22 +38,23 @@ let config = CatchupConfig {
     supports_timeshifting: true,
     terminates: true,
     granularity_seconds: 60,
+    is_ts_stream: false,
 };
 
 assert_eq!(config.catchup_days, 7);
 ```
 
-## Primary Use Cases
+## Typical Uses
 
-- IPTV playback backends
+- archive playback URL generation
 - EPG-driven timeshift playback
-- archive URL generation
+- provider catchup compatibility layers
 
-## Relationship To Other Crates
+## Current Limitations
 
-- uses `crispy-iptv-types`
-- often complements parser/client crates that surface catchup metadata
+- this crate does not fetch EPG or playback content
+- vendor compatibility still depends on the quality of upstream metadata and templates
 
-## Caveats
+## License
 
-- public docs should include vendor compatibility notes and placeholder semantics before release
+See `LICENSE.md` and `NOTICE.md`.
