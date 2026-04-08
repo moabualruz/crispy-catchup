@@ -105,10 +105,7 @@ pub fn generate_flussonic_source(
             let host = url_base(&parsed);
             let channel_path = segments[..segments.len() - 1].join("/");
             let tail = segments.last().copied().unwrap_or_default();
-            let query_suffix = parsed
-                .query()
-                .map(|q| format!("?{q}"))
-                .unwrap_or_default();
+            let query_suffix = parsed.query().map(|q| format!("?{q}")).unwrap_or_default();
 
             let lower_tail = tail.to_ascii_lowercase();
             if is_ts_hint || lower_tail == "mpegts" || lower_tail.ends_with(".ts") {
@@ -224,11 +221,16 @@ pub fn generate_xtream_codes_source(url: &str) -> Result<(String, bool), Catchup
 }
 
 fn parse_http_url(raw: &str) -> Option<Url> {
-    Url::parse(raw).ok().filter(|u| matches!(u.scheme(), "http" | "https"))
+    Url::parse(raw)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
 }
 
 fn non_empty_segments(url: &Url) -> Option<Vec<&str>> {
-    let segments: Vec<&str> = url.path_segments()?.filter(|segment| !segment.is_empty()).collect();
+    let segments: Vec<&str> = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect();
     if segments.is_empty() {
         None
     } else {
@@ -238,7 +240,11 @@ fn non_empty_segments(url: &Url) -> Option<Vec<&str>> {
 
 fn url_base(url: &Url) -> String {
     match url.port() {
-        Some(port) => format!("{}://{}:{port}", url.scheme(), url.host_str().unwrap_or_default()),
+        Some(port) => format!(
+            "{}://{}:{port}",
+            url.scheme(),
+            url.host_str().unwrap_or_default()
+        ),
         None => format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default()),
     }
 }
