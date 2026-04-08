@@ -50,10 +50,28 @@ assert_eq!(config.catchup_days, 7);
 - EPG-driven timeshift playback
 - provider catchup compatibility layers
 
+## Deterministic Time Semantics
+
+Formatting is driven by explicit offset input, not the host machine's local timezone.
+That means the same inputs produce the same formatted output regardless of where the
+caller is running.
+
+## Supported Provider Shapes
+
+The crate currently includes provider-oriented helpers for:
+
+- Flussonic-style live/catchup URL derivation
+- Xtream Codes-style live/movie/series stream URL derivation
+
+These helpers now use a broader URL-structure fallback path in addition to the
+well-known fast-path regexes, so common provider variants are less likely to fail
+just because the exact path shape differs from one canonical example.
+
 ## Current Limitations
 
 - this crate does not fetch EPG or playback content
-- vendor compatibility still depends on the quality of upstream metadata and templates
+- vendor compatibility still depends on upstream metadata quality and template correctness
+- some providers use highly custom archive URL semantics that still need caller-side handling
 
 ## License
 

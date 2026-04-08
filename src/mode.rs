@@ -49,9 +49,11 @@ impl From<crispy_iptv_types::CatchupType> for CatchupMode {
             crispy_iptv_types::CatchupType::Default => Self::Default,
             crispy_iptv_types::CatchupType::Append => Self::Append,
             crispy_iptv_types::CatchupType::Shift => Self::Shift,
+            crispy_iptv_types::CatchupType::Timeshift => Self::Timeshift,
             crispy_iptv_types::CatchupType::Flussonic => Self::Flussonic,
             crispy_iptv_types::CatchupType::Fs => Self::Flussonic,
             crispy_iptv_types::CatchupType::Xc => Self::XtreamCodes,
+            crispy_iptv_types::CatchupType::Vod => Self::Vod,
         }
     }
 }
