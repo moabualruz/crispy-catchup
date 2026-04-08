@@ -1,0 +1,23 @@
+[package]
+name = "crispy-catchup"
+description = "Catchup and timeshift URL utilities for IPTV channels"
+version = "0.1.1"
+edition = "2024"
+license = "CC-BY-NC-SA-4.0"
+repository = "https://github.com/moabualruz/crispy-catchup"
+homepage = "https://github.com/moabualruz/crispy-catchup"
+documentation = "https://docs.rs/crispy-catchup"
+readme = "README.md"
+keywords = ["iptv", "catchup", "timeshift", "epg", "streaming"]
+categories = ["multimedia", "network-programming"]
+rust-version = "1.85"
+
+[dependencies]
+crispy-iptv-types = "0.1.1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+
+[dev-dependencies]
+serde_json = "1"
