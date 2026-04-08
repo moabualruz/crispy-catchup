@@ -6,7 +6,7 @@
 //! - `FormatUnits()` — divisible time units (`{duration:N}`, `{offset:N}`)
 //! - `FormatUtc()` — absolute timestamp substitution
 
-use chrono::{DateTime, Datelike, Local, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, TimeZone, Timelike, Utc};
 use regex::Regex;
 
 /// Format a catchup URL template by substituting all time-related placeholders.
@@ -69,9 +69,9 @@ pub fn format_catchup_url_with_granularity(
     let now = Utc::now().timestamp() - timezone_shift_secs as i64;
     let end = adjusted_start + clamped_duration;
 
-    let dt_start = timestamp_to_local(adjusted_start);
-    let dt_end = timestamp_to_local(end);
-    let dt_now = timestamp_to_local(now);
+    let dt_start = timestamp_to_offset(adjusted_start, timezone_shift_secs);
+    let dt_end = timestamp_to_offset(end, timezone_shift_secs);
+    let dt_now = timestamp_to_offset(now, timezone_shift_secs);
 
     let mut result = template.to_string();
 
@@ -127,7 +127,7 @@ pub fn format_now_only(
     programme_duration: i64,
 ) -> String {
     let now = Utc::now().timestamp() - timezone_shift_secs as i64;
-    let dt_now = timestamp_to_local(now);
+    let dt_now = timestamp_to_offset(now, timezone_shift_secs);
 
     let mut result = template.to_string();
 
@@ -141,8 +141,8 @@ pub fn format_now_only(
     if programme_start > 0 {
         let adjusted_start = programme_start - timezone_shift_secs as i64;
         let end = adjusted_start + programme_duration;
-        let dt_start = timestamp_to_local(adjusted_start);
-        let dt_end = timestamp_to_local(end);
+        let dt_start = timestamp_to_offset(adjusted_start, timezone_shift_secs);
+        let dt_end = timestamp_to_offset(end, timezone_shift_secs);
 
         format_time_char('Y', &dt_start, &mut result);
         format_time_char('m', &dt_start, &mut result);
@@ -190,20 +190,23 @@ pub fn is_within_catchup_window(requested_time: i64, catchup_days: i32) -> bool 
     if catchup_days == 0 {
         return false;
     }
-    let window_start = Utc::now().timestamp() - (catchup_days as i64 * 24 * 60 * 60);
-    requested_time >= window_start
+    let now = Utc::now().timestamp();
+    let window_start = now - (catchup_days as i64 * 24 * 60 * 60);
+    requested_time >= window_start && requested_time <= now
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a UTC epoch timestamp to a local `DateTime`.
-fn timestamp_to_local(epoch: i64) -> DateTime<Local> {
-    Local
+/// Convert a UTC epoch timestamp to a deterministic fixed-offset `DateTime`.
+fn timestamp_to_offset(epoch: i64, timezone_shift_secs: i32) -> DateTime<FixedOffset> {
+    let offset = FixedOffset::east_opt(timezone_shift_secs)
+        .unwrap_or_else(|| FixedOffset::east_opt(0).expect("zero fixed offset should exist"));
+    offset
         .timestamp_opt(epoch, 0)
         .single()
-        .unwrap_or_else(Local::now)
+        .unwrap_or_else(|| Utc::now().with_timezone(&offset))
 }
 
 /// Replace a single-char time specifier `{ch}` with the formatted value.
@@ -211,7 +214,7 @@ fn timestamp_to_local(epoch: i64) -> DateTime<Local> {
 /// Translated from `FormatTime(const char ch, ...)` in `CatchupController.cpp`.
 /// Supports: Y (4-digit year), m (2-digit month), d (2-digit day),
 /// H (2-digit hour), M (2-digit minute), S (2-digit second).
-fn format_time_char(ch: char, dt: &DateTime<Local>, url: &mut String) {
+fn format_time_char(ch: char, dt: &DateTime<FixedOffset>, url: &mut String) {
     let placeholder = format!("{{{ch}}}");
     if !url.contains(&placeholder) {
         return;
@@ -269,7 +272,12 @@ fn format_units(name: &str, time: i64, url: &mut String) {
 ///
 /// The format string inside the braces uses single-char specifiers:
 /// Y, m, d, H, M, S — each replaced with the strftime equivalent `%Y`, etc.
-fn format_time_named(name: &str, dt: &DateTime<Local>, url: &mut String, has_var_prefix: bool) {
+fn format_time_named(
+    name: &str,
+    dt: &DateTime<FixedOffset>,
+    url: &mut String,
+    has_var_prefix: bool,
+) {
     let qualifier = if has_var_prefix {
         format!("${{{name}:")
     } else {
