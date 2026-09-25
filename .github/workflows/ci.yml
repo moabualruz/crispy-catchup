@@ -2,15 +2,40 @@ name: CI
 
 on:
   workflow_dispatch:
-  pull_request:
+  pull_request_target:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  workflow-routing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.4.0
+        if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name != github.repository
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4.4.0
+        if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          persist-credentials: false
+      - name: Test workflow routing
+        run: ruby .github/scripts/test-ci-routing.rb
+
+  test-trusted:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, generic]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
+        if: github.event_name != 'pull_request_target'
+      - uses: actions/checkout@v4.4.0
+        if: github.event_name == 'pull_request_target'
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
