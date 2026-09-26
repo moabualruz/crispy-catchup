@@ -2,7 +2,7 @@ name: CI
 
 on:
   workflow_dispatch:
-  pull_request_target:
+  pull_request:
   push:
     branches: [main]
 
@@ -10,44 +10,75 @@ permissions:
   contents: read
 
 jobs:
-  workflow-routing:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && fromJSON(format('["self-hosted", "linux", "x64", "generic", "pr-{0}-{1}-run-{2}-attempt-{3}"]', github.repository_id, github.event.pull_request.number, github.run_id, github.run_attempt))) || ((github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner || github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner) && fromJSON('["self-hosted", "linux", "x64", "generic"]')) || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4.4.0
-        if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name != github.repository
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login != github.repository_owner || github.actor != github.repository_owner
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4.4.0
-        if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          persist-credentials: false
-      - name: Test workflow routing
+      - name: test workflow routing
         run: ruby .github/scripts/test-ci-routing.rb
-
-  test-trusted:
-    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, generic]
-    steps:
-      - uses: actions/checkout@v4.4.0
-        if: github.event_name != 'pull_request_target'
-      - uses: actions/checkout@v4.4.0
-        if: github.event_name == 'pull_request_target'
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt
-        run: cargo fmt --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo test
-        run: cargo test --all-features
-      - name: cargo doc
-        run: cargo doc --no-deps
-      - name: cargo package
-        run: cargo package
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: fetch Rust dependencies
+        run: cargo fetch
+      - name: archive checked out source for hosted jobs
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login != github.repository_owner || github.actor != github.repository_owner
+        run: tar --exclude=.git --exclude=target -czf "$RUNNER_TEMP/source.tar.gz" -C "$GITHUB_WORKSPACE" .
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login != github.repository_owner || github.actor != github.repository_owner
+        with:
+          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  gate:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [fmt, clippy, test, doc, package]
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && fromJSON(format('["self-hosted", "linux", "x64", "generic", "pr-{0}-{1}-run-{2}-attempt-{3}"]', github.repository_id, github.event.pull_request.number, github.run_id, github.run_attempt))) || ((github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner || github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner) && fromJSON('["self-hosted", "linux", "x64", "generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login != github.repository_owner || github.actor != github.repository_owner
+        with:
+          name: source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source
+      - name: unpack checked out source for hosted jobs
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login != github.repository_owner || github.actor != github.repository_owner
+        run: tar -xzf "$RUNNER_TEMP/source/source.tar.gz" -C "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.toml') }}
+      - name: run ${{ matrix.gate }}
+        env:
+          GATE: ${{ matrix.gate }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target/${{ matrix.gate }}
+        run: |
+          case "$GATE" in
+            fmt) cargo fmt --check ;;
+            clippy) cargo clippy --all-targets --all-features -- -D warnings ;;
+            test) cargo test --all-features ;;
+            doc) cargo doc --no-deps ;;
+            package) cargo package ;;
+            *) echo "unknown gate: $GATE" >&2; exit 2 ;;
+          esac
