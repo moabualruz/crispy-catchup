@@ -79,10 +79,14 @@ prep_steps = prepare.fetch('steps')
 pr_checkout = prep_steps.find { |step| step['uses'] == 'actions/checkout@v4' }
 assert.call(pr_checkout && pr_checkout['if'].nil?, 'all PR source must be checked out once in preparation')
 assert.call(prep_steps.count { |step| step['uses'] == 'actions/checkout@v4' } == 1, 'prepare must check out source exactly once')
-assert.call(pr_checkout.dig('with', 'ref') == 'refs/pull/${{ github.event.pull_request.number }}/merge', 'PR checkout must pin the merge ref')
+assert.call(pr_checkout.dig('with', 'ref') == '${{ github.event.pull_request.head.sha }}', 'PR checkout must pin the event head SHA')
 assert.call(pr_checkout.dig('with', 'persist-credentials') == false, 'PR checkout must not persist credentials')
+verify_sha = prep_steps.find { |step| step['name'] == 'Verify PR event source SHA' }
+assert.call(verify_sha && verify_sha.dig('env', 'EXPECTED_PR_HEAD_SHA') == '${{ github.event.pull_request.head.sha }}', 'PR source verification must use the event head SHA')
+includes.call(verify_sha.dig('run'), 'git rev-parse HEAD', 'PR source verification must inspect the checked out commit')
+includes.call(verify_sha.dig('run'), 'EXPECTED_PR_HEAD_SHA', 'PR source verification must compare against the event head SHA')
+assert.call(prep_steps.none? { |step| step['run'] == 'ruby .github/workflows/test_ci_workflow.rb' }, 'pull_request_target must not execute a test script from untrusted PR source')
 assert.call(prep_steps.any? { |step| step['run'].to_s.include?('cargo fetch') }, 'dependencies must be prepared serially')
-assert.call(prep_steps.any? { |step| step['run'] == 'ruby .github/workflows/test_ci_workflow.rb' }, 'workflow contract must run in preparation')
 archive = prep_steps.find { |step| step['name'] == 'Archive prepared PR source' }
 assert.call(archive && archive['if'].nil?, 'PR source archive must include every pull request')
 includes.call(archive.dig('run'), 'git archive --format=tar HEAD', 'PR archive must use the checked out merge ref')
@@ -121,9 +125,13 @@ assert.call(release_checkout&.dig('with', 'persist-credentials') == false, 'manu
 require 'tmpdir'
 require 'open3'
 
-def run!(*args, chdir: nil, env: {})
+def capture(*args, chdir: nil, env: {})
   options = chdir ? { chdir: chdir } : {}
-  output, status = Open3.capture2e(env, *args, **options)
+  Open3.capture2e(env, *args, **options)
+end
+
+def run!(*args, chdir: nil, env: {})
+  output, status = capture(*args, chdir: chdir, env: env)
   abort output unless status.success?
   output
 end
@@ -159,29 +167,34 @@ Dir.mktmpdir('ci-source-contract') do |temp|
   File.write(File.join(repo, 'source.txt'), 'PR head bytes')
   run!('git', '-C', repo, 'commit', '-qam', 'PR head')
   pr_head_sha = run!('git', '-C', repo, 'rev-parse', 'HEAD').strip
-  run!('git', '-C', repo, 'switch', 'base')
-  File.write(File.join(repo, 'base-context.txt'), 'merge base context')
-  run!('git', '-C', repo, 'add', 'base-context.txt')
-  run!('git', '-C', repo, 'commit', '-qm', 'base context')
-  run!('git', '-C', repo, 'merge', '--no-ff', '-m', 'merge PR source', 'pr-head')
-  merge_sha = run!('git', '-C', repo, 'rev-parse', 'HEAD').strip
-  assert.call(pr_head_sha != merge_sha, 'fixture PR head and merge commit must differ')
-  run!('git', '-C', repo, 'switch', '--detach', merge_sha)
+  run!('git', '-C', repo, 'switch', '-c', 'later-pr-head')
+  File.write(File.join(repo, 'source.txt'), 'later PR head bytes')
+  run!('git', '-C', repo, 'commit', '-qam', 'later PR head')
+  later_pr_head_sha = run!('git', '-C', repo, 'rev-parse', 'HEAD').strip
+  run!('git', '-C', repo, 'update-ref', 'refs/pull/2/merge', later_pr_head_sha)
+  assert.call(pr_head_sha != later_pr_head_sha, 'fixture must include a later mutable PR ref target')
+  run!('git', '-C', repo, 'checkout', '--detach', pr_head_sha)
   File.write(File.join(repo, 'source.txt'), 'working tree poison')
   File.write(File.join(repo, 'untracked.txt'), 'must not be archived')
   File.write(File.join(repo, 'Cargo.lock'), 'generated lock bytes')
 
   runner_temp = File.join(temp, 'runner-temp')
   Dir.mkdir(runner_temp)
+  verify_sha_command = verify_sha.fetch('run')
+  run!('bash', '-e', '-o', 'pipefail', '-c', verify_sha_command, chdir: repo, env: { 'EXPECTED_PR_HEAD_SHA' => pr_head_sha })
   archive_command = prepare.fetch('steps').find { |step| step['name'] == 'Archive prepared PR source' }.fetch('run')
-  run!('bash', '-e', '-o', 'pipefail', '-c', archive_command, chdir: repo, env: { 'GITHUB_SHA' => merge_sha, 'RUNNER_TEMP' => runner_temp })
+  run!('bash', '-e', '-o', 'pipefail', '-c', archive_command, chdir: repo, env: { 'RUNNER_TEMP' => runner_temp })
+
+  run!('git', '-C', repo, 'checkout', '--', 'source.txt')
+  run!('git', '-C', repo, 'checkout', '--detach', later_pr_head_sha)
+  _, drift_status = capture('bash', '-e', '-o', 'pipefail', '-c', verify_sha_command, chdir: repo, env: { 'EXPECTED_PR_HEAD_SHA' => pr_head_sha })
+  assert.call(!drift_status.success?, 'PR source verification must reject a ref that moved after the event snapshot')
 
   workspace = File.join(temp, 'downstream')
   Dir.mkdir(workspace)
   restore_command = gates.fetch('cargo-test').fetch('steps').find { |step| step['name'] == 'Restore prepared PR source' }.fetch('run')
   run!('bash', '-e', '-c', restore_command, env: { 'RUNNER_TEMP' => runner_temp, 'GITHUB_WORKSPACE' => workspace })
-  assert.call(File.read(File.join(workspace, 'source.txt')) == 'PR head bytes', 'PR source archive did not restore the checked out merge commit')
-  assert.call(File.read(File.join(workspace, 'base-context.txt')) == 'merge base context', 'PR source archive omitted merge-commit content')
+  assert.call(File.read(File.join(workspace, 'source.txt')) == 'PR head bytes', 'PR source archive did not restore the event head snapshot')
   assert.call(File.read(File.join(workspace, 'Cargo.lock')) == 'generated lock bytes', 'PR source artifact omitted generated Cargo.lock')
   assert.call(!File.exist?(File.join(workspace, '.git')), 'PR source artifact must not carry Git credentials or metadata')
   assert.call(!File.exist?(File.join(workspace, 'untracked.txt')), 'PR source artifact included unrelated untracked content')

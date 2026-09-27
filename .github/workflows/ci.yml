@@ -22,12 +22,19 @@ jobs:
       - name: Check out PR source
         uses: actions/checkout@v4
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Verify PR event source SHA
+        env:
+          EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$EXPECTED_PR_HEAD_SHA" ]]; then
+            printf 'Checked out PR source %s, expected event head %s\n' "$actual_sha" "$EXPECTED_PR_HEAD_SHA" >&2
+            exit 1
+          fi
       - name: Fetch dependencies
         run: cargo fetch
-      - name: Verify CI workflow contract
-        run: ruby .github/workflows/test_ci_workflow.rb
       - name: Archive prepared PR source
         run: |
           git archive --format=tar HEAD > "$RUNNER_TEMP/pr-source.tar"
