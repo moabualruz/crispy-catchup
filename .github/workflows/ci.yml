@@ -2,24 +2,224 @@ name: CI
 
 on:
   workflow_dispatch:
+  pull_request_target:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crispy-catchup-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  test:
+  prepare-pr-source:
+    name: Prepare PR source
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify PR event source SHA
+        env:
+          EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          actual_sha="$(git rev-parse HEAD)"
+          if [[ "$actual_sha" != "$EXPECTED_PR_HEAD_SHA" ]]; then
+            printf 'Checked out PR source %s, expected event head %s\n' "$actual_sha" "$EXPECTED_PR_HEAD_SHA" >&2
+            exit 1
+          fi
+      - name: Fetch dependencies
+        run: cargo fetch
+      - name: Archive prepared PR source
+        run: |
+          git archive --format=tar HEAD > "$RUNNER_TEMP/pr-source.tar"
+          if [[ -f Cargo.lock ]]; then tar -rf "$RUNNER_TEMP/pr-source.tar" Cargo.lock; fi
+          gzip -n -c "$RUNNER_TEMP/pr-source.tar" > "$RUNNER_TEMP/pr-source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pr-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  fmt:
+    name: Rust format
+    needs: prepare-pr-source
+    if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - name: Isolate this gate build output
+        run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-fmt\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out push or manual source
+        if: github.event_name != 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
+        run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: cargo fmt
-        run: cargo fmt --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo test
-        run: cargo test --all-features
-      - name: cargo doc
-        run: cargo doc --no-deps
-      - name: cargo package
-        run: cargo package
+        with:
+          shared-key: fmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: Rust clippy
+    needs: prepare-pr-source
+    if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - name: Isolate this gate build output
+        run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-clippy\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out push or manual source
+        if: github.event_name != 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
+        run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: clippy
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  cargo-test:
+    name: Rust tests
+    needs: prepare-pr-source
+    if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - name: Isolate this gate build output
+        run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-test\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out push or manual source
+        if: github.event_name != 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
+        run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+      - run: cargo test --all-features
+
+  doc:
+    name: Rust documentation
+    needs: prepare-pr-source
+    if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - name: Isolate this gate build output
+        run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-doc\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out push or manual source
+        if: github.event_name != 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
+        run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: doc
+      - run: cargo doc --no-deps
+
+  package:
+    name: Rust package
+    needs: prepare-pr-source
+    if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - name: Isolate this gate build output
+        run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-package\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Check out push or manual source
+        if: github.event_name != 'pull_request_target'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
+        run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: package
+      - run: cargo package
+
+  test:
+    needs: [prepare-pr-source, fmt, clippy, cargo-test, doc, package]
+    if: ${{ always() }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
+    steps:
+      - name: Check every required gate
+        env:
+          PREPARE_RESULT: ${{ needs.prepare-pr-source.result }}
+          FMT_RESULT: ${{ needs.fmt.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+          TEST_RESULT: ${{ needs.cargo-test.result }}
+          DOC_RESULT: ${{ needs.doc.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          if [[ "$PREPARE_RESULT" != success && ! ("$PREPARE_RESULT" == skipped && "$GITHUB_EVENT_NAME" != pull_request_target) ]]; then
+            printf 'Source preparation did not succeed: %s\n' "$PREPARE_RESULT" >&2
+            exit 1
+          fi
+          for result in "$FMT_RESULT" "$CLIPPY_RESULT" "$TEST_RESULT" "$DOC_RESULT" "$PACKAGE_RESULT"; do
+            if [[ "$result" != success ]]; then
+              printf 'Required workflow gate did not succeed: %s\n' "$result" >&2
+              exit 1
+            fi
+          done

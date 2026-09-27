@@ -8,11 +8,16 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   release-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted", "linux", "x64", "generic"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
