@@ -2,7 +2,7 @@ name: CI
 
 on:
   workflow_dispatch:
-  pull_request:
+  pull_request_target:
   push:
     branches: [main]
 
@@ -16,30 +16,24 @@ concurrency:
 jobs:
   prepare-pr-source:
     name: Prepare PR source
-    if: github.event_name == 'pull_request'
-    runs-on: ${{ github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || 'ubuntu-latest' }}
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
     steps:
-      - name: Check out fork source
-        if: github.event.pull_request.head.repo.full_name != github.repository
+      - name: Check out PR source
         uses: actions/checkout@v4
         with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
           persist-credentials: false
-      - name: Verify brokered same-repository PR worktree
-        if: github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          test -L "$GITHUB_WORKSPACE"
-          workspace="$(realpath "$GITHUB_WORKSPACE")"
-          test "$(git -C "$workspace" rev-parse --show-toplevel)" = "$workspace"
-          test "$(git -C "$workspace" rev-parse HEAD)" = "$GITHUB_SHA"
-      - name: Fetch locked dependencies
-        run: cargo fetch --locked
+      - name: Fetch dependencies
+        run: cargo fetch
       - name: Verify CI workflow contract
         run: ruby .github/workflows/test_ci_workflow.rb
-      - name: Archive fork source
-        if: github.event.pull_request.head.repo.full_name != github.repository
-        run: git archive --format=tar "$GITHUB_SHA" | gzip -n > "$RUNNER_TEMP/pr-source.tar.gz"
+      - name: Archive prepared PR source
+        run: |
+          git archive --format=tar HEAD > "$RUNNER_TEMP/pr-source.tar"
+          if [[ -f Cargo.lock ]]; then tar -rf "$RUNNER_TEMP/pr-source.tar" Cargo.lock; fi
+          gzip -n -c "$RUNNER_TEMP/pr-source.tar" > "$RUNNER_TEMP/pr-source.tar.gz"
       - uses: actions/upload-artifact@v4
-        if: github.event.pull_request.head.repo.full_name != github.repository
         with:
           name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pr-source.tar.gz
@@ -50,32 +44,23 @@ jobs:
     name: Rust format
     needs: prepare-pr-source
     if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
     steps:
       - name: Isolate this gate build output
         run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-fmt\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-      - name: Verify shared PR worktree
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test -L "$GITHUB_WORKSPACE"
-          workspace="$(realpath "$GITHUB_WORKSPACE")"
-          test "$(git -C "$workspace" rev-parse --show-toplevel)" = "$workspace"
-          test "$(git -C "$workspace" rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out push or manual source
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_target'
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download prepared fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
           name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}
-      - name: Restore fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
         run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -90,32 +75,23 @@ jobs:
     name: Rust clippy
     needs: prepare-pr-source
     if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
     steps:
       - name: Isolate this gate build output
         run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-clippy\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-      - name: Verify shared PR worktree
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test -L "$GITHUB_WORKSPACE"
-          workspace="$(realpath "$GITHUB_WORKSPACE")"
-          test "$(git -C "$workspace" rev-parse --show-toplevel)" = "$workspace"
-          test "$(git -C "$workspace" rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out push or manual source
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_target'
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download prepared fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
           name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}
-      - name: Restore fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
         run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -130,32 +106,23 @@ jobs:
     name: Rust tests
     needs: prepare-pr-source
     if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
     steps:
       - name: Isolate this gate build output
         run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-test\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-      - name: Verify shared PR worktree
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test -L "$GITHUB_WORKSPACE"
-          workspace="$(realpath "$GITHUB_WORKSPACE")"
-          test "$(git -C "$workspace" rev-parse --show-toplevel)" = "$workspace"
-          test "$(git -C "$workspace" rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out push or manual source
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_target'
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download prepared fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
           name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}
-      - name: Restore fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
         run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -169,32 +136,23 @@ jobs:
     name: Rust documentation
     needs: prepare-pr-source
     if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
     steps:
       - name: Isolate this gate build output
         run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-doc\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-      - name: Verify shared PR worktree
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test -L "$GITHUB_WORKSPACE"
-          workspace="$(realpath "$GITHUB_WORKSPACE")"
-          test "$(git -C "$workspace" rev-parse --show-toplevel)" = "$workspace"
-          test "$(git -C "$workspace" rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out push or manual source
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_target'
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download prepared fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
           name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}
-      - name: Restore fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
         run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -208,32 +166,23 @@ jobs:
     name: Rust package
     needs: prepare-pr-source
     if: ${{ !cancelled() && (needs.prepare-pr-source.result == 'success' || needs.prepare-pr-source.result == 'skipped') }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
     steps:
       - name: Isolate this gate build output
         run: printf 'CARGO_TARGET_DIR=%s/cargo-target/%s-%s-package\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
-      - name: Verify shared PR worktree
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          test -L "$GITHUB_WORKSPACE"
-          workspace="$(realpath "$GITHUB_WORKSPACE")"
-          test "$(git -C "$workspace" rev-parse --show-toplevel)" = "$workspace"
-          test "$(git -C "$workspace" rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out push or manual source
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request_target'
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download prepared fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Download prepared PR source
+        if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
           name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}
-      - name: Restore fork source
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+      - name: Restore prepared PR source
+        if: github.event_name == 'pull_request_target'
         run: tar -xzf "$RUNNER_TEMP/pr-source.tar.gz" -C "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -246,7 +195,7 @@ jobs:
   test:
     needs: [prepare-pr-source, fmt, clippy, cargo-test, doc, package]
     if: ${{ always() }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJSON(format('["self-hosted","linux","x64","generic","pr-{0}-{1}"]', github.repository_id, github.event.pull_request.number)) || github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","generic"]') }}
+    runs-on: ${{ (github.event_name == 'pull_request_target' && 'ubuntu-latest') || (github.ref == 'refs/heads/main' && github.actor == github.repository_owner && fromJSON('["self-hosted","linux","x64","generic"]')) || 'ubuntu-latest' }}
     steps:
       - name: Check every required gate
         env:
@@ -257,7 +206,7 @@ jobs:
           DOC_RESULT: ${{ needs.doc.result }}
           PACKAGE_RESULT: ${{ needs.package.result }}
         run: |
-          if [[ "$PREPARE_RESULT" != success && ! ("$PREPARE_RESULT" == skipped && "$GITHUB_EVENT_NAME" != pull_request) ]]; then
+          if [[ "$PREPARE_RESULT" != success && ! ("$PREPARE_RESULT" == skipped && "$GITHUB_EVENT_NAME" != pull_request_target) ]]; then
             printf 'Source preparation did not succeed: %s\n' "$PREPARE_RESULT" >&2
             exit 1
           fi
