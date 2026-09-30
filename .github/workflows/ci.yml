@@ -42,7 +42,8 @@ jobs:
           gzip -n -c "$RUNNER_TEMP/pr-source.tar" > "$RUNNER_TEMP/pr-source.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
-          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}
           path: ${{ runner.temp }}/pr-source.tar.gz
           if-no-files-found: error
           retention-days: 1
@@ -64,7 +65,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
-          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Restore prepared PR source
         if: github.event_name == 'pull_request_target'
@@ -95,7 +96,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
-          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Restore prepared PR source
         if: github.event_name == 'pull_request_target'
@@ -126,7 +127,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
-          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Restore prepared PR source
         if: github.event_name == 'pull_request_target'
@@ -156,7 +157,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
-          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Restore prepared PR source
         if: github.event_name == 'pull_request_target'
@@ -186,7 +187,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         uses: actions/download-artifact@v4
         with:
-          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-source-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.run_id }}
           path: ${{ runner.temp }}
       - name: Restore prepared PR source
         if: github.event_name == 'pull_request_target'
